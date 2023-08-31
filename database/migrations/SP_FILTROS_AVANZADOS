@@ -1,0 +1,83 @@
+CREATE  PROCEDURE get_documents_settings(
+	IN search_txt VARCHAR(250),
+	IN perpage INT,
+	IN npage INT,
+	IN _order VARCHAR(4),
+	IN orderBy VARCHAR(250),
+	IN date_from DATE,
+	IN date_to DATE,
+	IN _service_type INT,
+	IN _status INT,
+	IN _end_of_process INT
+)
+BEGIN 
+	DECLARE cc INT DEFAULT 0;
+	
+	SELECT COUNT(DISTINCT cd.id) INTO cc FROM ci_documents cd
+	INNER JOIN ci_service_document csd ON csd.document_id = cd.id 
+	INNER JOIN ci_service_type cst ON cst.id = csd.service_id
+	WHERE cd.deleted_at IS NULL
+		AND 
+		CASE
+			WHEN(date_from IS NOT NULL AND date_to IS NOT NULL OR date_from !='' AND date_to !='')
+				THEN DATE(cd.created_at) BETWEEN date_from AND date_to
+			WHEN(date_from IS NOT NULL OR date_from != '')
+				THEN DATE(cd.created_at) >= date_from
+			WHEN(date_to IS NOT NULL OR date_to != '')
+				THEN DATE(cd.created_at) <= date_to
+			ELSE TRUE END 
+		
+		AND 
+		IF(search_txt IS NULL, TRUE, cd.name LIKE CONCAT('%',search_txt,'%'))
+		
+		AND IF(_service_type IS NULL, TRUE, csd.service_id = _service_type)
+		
+		AND IF(_status IS NULL, TRUE, cd.is_active = _status)
+		
+		AND IF(_end_of_process IS NULL, TRUE, cd.is_end_of_process = _end_of_process);
+
+	SET npage = perpage * (npage - 1);
+
+	SET @query = CONCAT(
+	"SELECT cd.id, cd.name, cd.description, cd.is_active, cd.is_end_of_process, CONCAT(u.first_name,' ', u.last_name) created_by, 
+	 DATE_FORMAT(cd.created_at, '%m/%d/%Y %h:%i %p') created_at, JSON_ARRAYAGG(cst.name) service_type, ",cc," cc
+	 FROM ci_documents cd
+	 INNER JOIN users u ON u.id = cd.created_by
+	 INNER JOIN ci_service_document csd ON csd.document_id = cd.id 
+	 INNER JOIN ci_service_type cst ON cst.id = csd.service_id
+	 WHERE cd.deleted_at IS NULL ",
+	 
+	 CASE
+			WHEN(date_from IS NOT NULL AND date_to IS NOT NULL OR date_from !='' AND date_to !='')
+				THEN CONCAT(" AND DATE(cd.created_at) BETWEEN '", date_from,"' AND '",date_to,"'") 
+			WHEN(date_from IS NOT NULL OR date_from != '')
+				THEN CONCAT(" AND DATE(cd.created_at) >= '",date_from,"'") 
+			WHEN(date_to IS NOT NULL OR date_to != '')
+				THEN CONCAT(" AND DATE(cd.created_at) <= '",date_to,"'")
+			ELSE " AND TRUE" END,
+	 
+	 IF(search_txt IS NULL OR search_txt = '', " AND TRUE ",
+	 	CONCAT(" AND cd.name LIKE '%",search_txt,"%' ")
+	 ),
+	 
+	 IF(_service_type IS NULL, " AND TRUE ",
+	 	CONCAT(" AND csd.service_id = ", _service_type,"") 
+	 ),
+	 
+	 IF(_status IS NULL, " AND TRUE ", 
+	 	CONCAT(" AND cd.is_active = ",_status,"") 
+	 ),
+	 
+	 IF(_end_of_process IS NULL, " AND TRUE ", 
+	 	CONCAT(" AND cd.is_end_of_process = ",_end_of_process," ") 
+	 ),
+	 
+	 "GROUP BY cd.id 
+	 ORDER BY ",orderBy," ", _order," LIMIT ",perpage," OFFSET ", npage
+	);
+
+	PREPARE stmt FROM @query;
+    EXECUTE stmt;
+    DEALLOCATE PREPARE stmt;
+	
+END
