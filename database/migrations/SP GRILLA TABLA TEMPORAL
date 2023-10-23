@@ -1,0 +1,199 @@
+CREATE DEFINER=`root`@`localhost` PROCEDURE `ci_testing4`.`search_court_info`(
+            in in_user_id int,
+            in in_assigned_to int,
+            in in_module int,
+            in in_role_id int,
+            in in_from_date date,
+            in in_to_date date,
+            in in_search_text varchar(50),
+            in in_orden varchar(4),
+            in in_page int,
+            in in_per_page int,
+            in in_tab int,
+            in in_status int,
+            in in_fil_module_id int,
+            in in_created_by int,
+            in in_step_id int,
+            in in_last_note_from date,
+            in in_last_note_to date,
+            in in_type_service int,
+            in in_type_document int)
+BEGIN
+            declare _counter int;
+                declare _total_pay decimal(11,2);
+            DROP TEMPORARY TABLE IF EXISTS temp_court_cases;
+
+            CREATE TEMPORARY TABLE IF NOT EXISTS
+            temp_court_cases ( last_cur_step varchar(255), INDEX(id, client_account_id) )
+            ENGINE=MEMORY
+            AS (
+                select
+                    cc.id,
+                    cc.case_number,
+                    cc.date_entry,
+                    ca.account,
+                    cc.attorney,
+                    cc.created_at,
+                    cc2.ci_name court_name,
+                    cc.credit_id,
+                    ifnull(dc.value, dc2.value) credit_name,
+                    cc.status,
+                    cc.status+0 status_id,
+                    cc.lead_id,
+                    cc.client_account_id,
+                    /*(SELECT next_step_id from ci_case_steps_detail where case_id = cc.id order by id desc limit 1) last_next_step_id,
+                    (SELECT css.name from ci_case_steps_detail aaa left join ci_case_steps css on aaa.current_step_id = css.id where case_id = cc.id order by aaa.id desc limit 1) last_cur_step,
+                    (SELECT css.id   from ci_case_steps_detail aaa left join ci_case_steps css on aaa.current_step_id = css.id where case_id = cc.id order by aaa.id desc limit 1) last_cur_step_id,*/
+                    ccsd.next_step_id last_next_step_id,
+                    css.name last_cur_step,
+                    css.id last_cur_step_id,
+                    cc.advisor_id,
+                    l.first_name lead_first_name,
+                    l.middle_name lead_middle_name,
+                    l.last_name lead_last_name,
+                    u.first_name created_by_name,
+                    u.last_name created_by_last_name,
+                    u2.first_name assigned_name,
+                    u2.last_name assigned_last_name,
+                    l.mobile,
+                    ca.program_id client_program_id,
+                    l.belongs_module,
+                    x.service_id,
+                    x.service_name,
+                    x.service_type,
+                    x.document_id,
+                    x.document_name,
+                    x.document_date,
+                    x.sent_status,
+                    cc.modul_id module_id,
+                    m.initial initial_module,
+                    m.name name_module,
+                    p.color color_module,
+                    cia.name attorney_name,
+                    cia.id attorney_id,
+                    cia.number attorney_number,
+                    cc.available_hour_from,
+                    cc.available_hour_to,
+                    cc.available_always,
+                    (SELECT COALESCE(sum(t.amount),0)  from ci_court_transactions cct 
+						left join transactions t on t.id = cct.transaction_id
+						left join ci_case_type_document cctd on cct.case_type_document_id = cctd.id 
+						where cctd.case_id =  cc.id and cct.transaction_id is not null ) amount_pay,
+					xx.created_at last_note,
+					COALESCE(zz.due_date, '-') next_task,
+					zz.done next_task_is_done,
+					(select count(*) 
+						from ci_recurrency_tasks crt
+						left join tasks_accounts ta ON crt.task_note_id = ta.id 
+						where ta.subject = 'Court Info Task' 
+						and ta.done = 0 
+						and crt.case_id = cc.id) pending_tasks,
+					TIMESTAMPDIFF(HOUR, CAST(now() AS DATETIME), CAST(DATE_ADD(cc.created_at, INTERVAL 1 DAY) AS DATETIME)) time_to_expire,
+					cc.validated_at,
+					
+					(select count(*) from ci_court_transactions cct
+					left join ci_case_type_document cctd on cct.case_type_document_id = cctd.id 
+					where cct.transaction_id is null and cctd.case_id = cc.id) hasPendingPayment
+
+
+                from ci_cases cc
+                join leads l on l.id = cc.lead_id
+                left join clients c on c.lead_id = l.id
+                left join client_accounts ca on ca.client_id = c.id and ca.program_id = convert_program(cc.modul_id)
+                join modules m on m.id = cc.modul_id
+                left join ds_credits dc  on dc.id = cc.credit_id
+                left join ds_list_credits dlc on dlc.id = cc.list_credit_id
+                left join ds_credits dc2  on dc2.id = dlc.ds_credit_id
+                left outer join ci_courts cc2 on cc2.id = cc.court_id
+                join users u on u.id = cc.created_by
+                left join users u2 on u2.id = cc.advisor_id
+                left join ci_attorneys cia on cia.id = cc.attorney
+                join (
+                    select cctd.case_id, cctd.document_id, cd2.name document_name,
+                        cctd.`date` document_date,
+                        cctd.sent_status sent_status,
+                        cst.id service_id,
+                        cst.name service_name,
+                        cst.`type` service_type,
+                        ifnull(t.amount, 0) amount_pay
+                    from  ci_case_type_document cctd
+                    join(
+                        select max(cctd2.id) id, cctd2.case_id
+                        from ci_case_type_document cctd2
+                        group by 2
+                    ) cd on cd.id = cctd.id
+                    join ci_documents cd2 on cd2.id = cctd.document_id
+                    join ci_service_type cst on cst.id = cctd.service_id
+                    left join transactions t on t.id = cctd.transaction_id
+                ) x on x.case_id = cc.id
+                
+                -- get last tracking
+                left join (select MAX(ta.created_at) created_at, crt.case_id
+					from ci_recurrency_tasks crt
+					left join tasks_accounts ta ON crt.task_note_id = ta.id 
+					where ta.subject = 'Court Info Task' 
+					and ta.done = 0 GROUP BY crt.case_id
+                ) xx on cc.id = xx.case_id
+                
+                -- get next tracking
+                left join (
+                	SELECT MIN(created_at) AS created_at, case_id, done, due_date
+					FROM (
+					    SELECT
+					        ta.created_at,
+					        crt.case_id,
+					        ta.done,
+					        ta.due_date
+					    FROM ci_recurrency_tasks crt
+					    LEFT JOIN tasks_accounts ta ON crt.task_note_id = ta.id
+					    WHERE ta.subject = 'Court Info Task' 
+					    -- AND DATE(ta.due_date) >= DATE(NOW())
+					    ORDER BY ABS(TIMESTAMPDIFF(SECOND, NOW(), ta.due_date))  -- Order by time difference in seconds
+					) AS subquery
+					GROUP BY case_id, done, due_date
+                ) zz on cc.id = zz.case_id
+                
+                
+				left join programs p on p.id = convert_program(m.id)
+				left join(
+					SELECT max(aaa.id) id, aaa.case_id
+					from ci_case_steps_detail aaa
+					group by 2
+				) stde on stde.case_id = cc.id
+				join ci_case_steps_detail ccsd on ccsd.id = stde.id
+				left join ci_case_steps css on css.id = ccsd.current_step_id
+                where if(in_module = 5, if(in_role_id in(1,2,17), if(in_assigned_to is null, true, cc.advisor_id = in_assigned_to), cc.advisor_id = in_user_id),
+                                    if(in_role_id in(1,2,17), cc.modul_id = in_module, cc.created_by = in_user_id and cc.modul_id = in_module))
+                and if((in_from_date is null or in_to_date is null), true, date(cc.created_at) between in_from_date and in_to_date)
+                and if(in_search_text is null or in_search_text = '', true,
+                        ( concat_ws(' ', l.first_name, l.middle_name, l.last_name) like concat('%',in_search_text,'%')
+                        or ca.account like concat('%',in_search_text,'%')
+                        or l.mobile like concat('%',in_search_text,'%') ))
+                and if(in_tab = 1, if(in_status is null or in_status = 0, cc.status in (1,2), cc.status = in_status), cc.status in (7))
+                and if(in_fil_module_id is null or in_fil_module_id = 0, true, cc.modul_id = in_fil_module_id)
+                and if(in_created_by is null or in_created_by = 0, true, cc.created_by = in_created_by)
+                and if(in_assigned_to is null or in_assigned_to = 0, true, cc.advisor_id = in_assigned_to)
+                and if(in_step_id is null or in_step_id = 0, true, css.id = in_step_id)
+                and if((in_last_note_from is null or in_last_note_to is null), true, date(xx.created_at) between in_last_note_from and in_last_note_to)
+                and if((in_type_service is null or in_type_service = 0),true,x.service_type=in_type_service)
+                and if((in_type_document is null or in_type_document = 0),true,x.document_id=in_type_document)
+            );
+
+            select count(*) into _counter from temp_court_cases;
+
+            select ifnull(sum(amount_pay),0) into _total_pay from temp_court_cases;
+
+            set in_page=in_per_page*(in_page-1);
+
+            set @query = concat('select ',_counter,' counter, ', _total_pay, ' total_pay, tcc.*,
+                                CONCAT_WS(" ", tcc.lead_first_name, tcc.lead_middle_name, tcc.lead_last_name) name_lead,
+                                CONCAT_WS(" ", tcc.created_by_name, tcc.created_by_last_name) created_by,
+                                CONCAT_WS(" ", tcc.assigned_name, tcc.assigned_last_name) assigned_to,
+                                tcc.attorney_id, tcc.attorney_number, tcc.attorney_name, cc.available_days
+                                from temp_court_cases tcc
+                                JOIN ci_cases cc on cc.id = tcc.id
+                                order by tcc.created_at ',in_orden,' limit ',in_per_page,' offset ',in_page,';');
+            prepare stmt from @query;
+            execute stmt;
+            deallocate prepare stmt;
+        END 
