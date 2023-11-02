@@ -1,0 +1,152 @@
+CREATE DEFINER=`root`@`localhost` PROCEDURE `ci_testing5`.`ci_insert_case_document`(
+            in _case_id bigint,
+            in _created_by int,
+            in _is_end_of_proccess bool,
+            in _has_anwser bool,
+            in _date date,
+            in _doc_type int,
+            in _service_id int,
+            in in_refId varchar(40),
+            in _case_type_document_id int,
+            in _case_module_id int,
+            IN in_extra_information json,
+            in in_fraction_type varchar(10),
+            in in_total_cost decimal(20,2),
+            in _motive_id int
+             )
+BEGIN
+                        declare tranId char(36);
+                        declare _old_or_new_case_type_document_id int default null;
+                        -- declare _last_amount_payment decimal(10,2);
+                        -- single payment
+                        -- declare _single INT DEFAULT 1;
+ 
+                        DECLARE _error_code INT DEFAULT 0;
+                        DECLARE _error_message VARCHAR(255) DEFAULT '';
+                        DECLARE _next_step INT DEFAULT NULL;
+                        
+                        DECLARE CONTINUE HANDLER FOR SQLEXCEPTION
+                        
+                        BEGIN
+                            GET DIAGNOSTICS CONDITION 1 _error_code = MYSQL_ERRNO, _error_message = MESSAGE_TEXT;
+                            ROLLBACK;
+                            SELECT 'Error', _error_code AS ErrorCode, _error_message AS ErrorMessage; 
+                        END;
+                                                                    
+                        START TRANSACTION;
+                        
+                        if (_case_module_id <> 5) then
+                            select id into tranId from transactions t where transaction_id = in_refId limit 1;
+                        end if;
+              
+                        IF (_is_end_of_proccess = TRUE) THEN
+                                                
+                            -- UPDATE LAST TRACKING - END CASE
+                            UPDATE ci_case_tracking SET 
+                            updated_at = NOW()
+                            WHERE case_id = _case_id AND updated_at is null;
+                                            
+                            -- CHANGE CASE STATUS TO CLOSED
+                            UPDATE ci_cases SET status = 7, updated_at = NOW() WHERE id = _case_id;
+                                                    
+                            -- CREATE NEW TRACKING
+                            INSERT INTO ci_case_tracking (case_id, status, commentary, created_by, created_at ) VALUES (_case_id,	7 , 'CASE DONE', _created_by, NOW());
+
+                            SET @total_installements = CASE 
+							    WHEN in_fraction_type = 'single' THEN 1
+							    WHEN in_fraction_type = 'multiple' THEN 2
+							    ELSE NULL
+							END;
+                                                          
+                             -- create last loop just for request for dismissal document
+                            INSERT INTO ci_case_type_document (document_id, case_id, created_by, has_answer, created_at, `date`, service_id, transaction_id, total_cost,fraction_type, extra_information, installements_number, motive_id)
+                            VALUES(_doc_type, _case_id, _created_by, if(_has_anwser = 1, true, false), now(), _date, _service_id, if(tranId is null , null, tranId),in_total_cost,in_fraction_type,in_extra_information, @total_installements,_motive_id);
+                           
+                            SET @last_case_type_document := LAST_INSERT_ID();
+                            SET _old_or_new_case_type_document_id = LAST_INSERT_ID();
+                                                
+                            if (_case_module_id <> 5 and tranId is not null) then
+                                if(in_total_cost is not null) then
+	                                -- if is single set 1 installement_number
+	                                INSERT INTO ci_court_transactions(transaction_id, case_type_document_id, created_at, installement_number)
+	                                VALUES(tranId, @last_case_type_document, now(), @total_installements);
+	
+	                                -- create empty row for second installement
+	                                if (@total_installements = 2) then 
+	                                    INSERT INTO ci_court_transactions(transaction_id, case_type_document_id, created_at, installement_number)
+	                                    VALUES(null, @last_case_type_document, now(), 2);
+	                                end if;
+                               end if;
+                            end if ;
+
+                            INSERT INTO ci_case_steps_detail(current_step_id, case_id, created_at,created_by, case_type_document_id) 
+                            VALUES (4,_case_id,now(),_created_by, _case_type_document_id);
+                        
+                            INSERT INTO ci_case_steps_detail(current_step_id, case_id, created_at,created_by, case_type_document_id) 
+                            VALUES (4,_case_id,now(),_created_by, @last_case_type_document);
+ 
+                            -- create to add in timeline
+                            INSERT INTO ci_case_steps_detail(current_step_id, case_id, created_at,created_by, case_type_document_id) 
+                            VALUES (5,_case_id,now(),_created_by, @last_case_type_document);
+                           
+                                                    
+                        ELSE 
+                            -- start new loop
+                            SET @total_installements = CASE 
+							    WHEN in_fraction_type = 'single' THEN 1
+							    WHEN in_fraction_type = 'multiple' THEN 2
+							    ELSE NULL
+							END;
+						
+                            INSERT INTO ci_case_type_document (document_id, case_id, created_by, has_answer, created_at, `date`, service_id, transaction_id,total_cost,fraction_type,extra_information, installements_number, motive_id)
+                            VALUES(_doc_type, _case_id, _created_by, if(_has_anwser = 1, true, false), now(), _date, _service_id, tranId,in_total_cost,in_fraction_type,in_extra_information, @total_installements,_motive_id);
+                        
+                            SET @last_case_type_document := LAST_INSERT_ID();
+                            SET _old_or_new_case_type_document_id = LAST_INSERT_ID();
+                        
+                        
+                           if (_case_module_id <> 5 and tranId is not null) then
+								if(in_total_cost is not null) then
+
+	                                -- if is single set 1 installement_number
+	                                INSERT INTO ci_court_transactions(transaction_id, case_type_document_id, created_at, installement_number)
+	                                VALUES(tranId, @last_case_type_document, now(), @total_installements);
+	                                       
+	                                -- create empty row for second installement
+	                                if (@total_installements = 2) then 
+	                                    INSERT INTO ci_court_transactions(transaction_id, case_type_document_id, created_at, installement_number)
+	                                    VALUES(null, @last_case_type_document, now(), 2);
+	                                end if;
+	                            end if;
+                           end if;
+                    
+                            -- HAS ANSWER
+                            IF (_has_anwser = 1) THEN
+                                -- update current step to documents updated and next step to pending to prepare answer
+                                INSERT INTO ci_case_steps_detail(current_step_id, next_step_id, case_id, created_at,created_by, case_type_document_id) 
+                                VALUES (4,6,_case_id,now(),_created_by, _case_type_document_id);
+                               
+                                INSERT INTO ci_case_steps_detail(current_step_id, next_step_id, case_id, created_at,created_by, case_type_document_id) 
+                                VALUES (4,6,_case_id,now(),_created_by, @last_case_type_document);
+                                SELECT 6 INTO _next_step; 
+                            ELSE
+                                -- HAS NOT ANSWER
+                                -- update current step to documents updated and next step to pending to give indication
+                                INSERT INTO ci_case_steps_detail(current_step_id, next_step_id, case_id, created_at,created_by, case_type_document_id) 
+                                VALUES (4,7,_case_id,now(),_created_by, _case_type_document_id);
+                               
+                                INSERT INTO ci_case_steps_detail(current_step_id, next_step_id, case_id, created_at,created_by, case_type_document_id) 
+                                VALUES (4,7,_case_id,now(),_created_by, @last_case_type_document);
+                                SELECT 7 INTO _next_step;
+                            END IF;
+                                            
+                        
+                        END IF;
+ 
+                        IF ROW_COUNT() > 0 THEN COMMIT;
+                            SELECT _next_step next_step, 'success' AS result, _old_or_new_case_type_document_id as case_type_document_id;
+                        ELSE 
+                            ROLLBACK;    
+                            SELECT 'error' AS result, _error_code as error_code, _error_message as error_message;
+                        END IF;
+                    END 
