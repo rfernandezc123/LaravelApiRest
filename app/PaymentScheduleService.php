@@ -84,7 +84,7 @@ class PaymentScheduleService
             $paginator = new \Illuminate\Pagination\LengthAwarePaginator($results, $totalCount, $per_page, $current_page);
 
             return $paginator;
-        } catch (QueryException $e) {
+        } catch (\Exception $e) {
             Log::error('Error in PaymentScheduleService::index: ' . $e->getMessage());
             throw $e;
         }
